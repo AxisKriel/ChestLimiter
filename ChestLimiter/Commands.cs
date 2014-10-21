@@ -3,14 +3,19 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using TShockAPI;
 using ChestLimiter.DB;
+using TShockAPI;
 
 namespace ChestLimiter
 {
 	internal class Commands
 	{
 		#region Strings
+
+		private static string m_chests(int count)
+		{
+			return "This player owns {0} chests.".SFormat(count);
+		}
 
 		private static string m_exempt(bool group)
 		{
@@ -54,7 +59,9 @@ namespace ChestLimiter
 				Limiter limiter = ChestLimiter.Limiters.GetLimiter(args.Player.UserAccountName);
 				bool group = args.Player.Group.HasPermission(Permissions.Exempt);
 				args.Player.SendInfoMessage((limiter == null || limiter.Chests.Count < 1) ? m_none :
-					(limiter.Limit == -1 || group) ? m_exempt(group) : m_format(limiter));
+					(limiter.Unlimited || group) ? m_exempt(group) : m_format(limiter));
+				if (limiter.Unlimited || group)
+					args.Player.SendInfoMessage(m_chests(limiter.Chests.Count));
 			}
 			else
 			{
@@ -64,7 +71,7 @@ namespace ChestLimiter
 					return;
 				}
 
-				string modify = null;
+				string modify = "";
 				var sb = new StringBuilder();
 
 				for (int i = 0; i < args.Parameters.Count; i++)
@@ -95,8 +102,14 @@ namespace ChestLimiter
 					Limiter limiter = ChestLimiter.Limiters.GetLimiter(accountName);
 					bool group = TShock.Groups.GetGroupByName(user.Group).HasPermission(Permissions.Exempt);
 					if (String.IsNullOrEmpty(modify))
+					{
 						args.Player.SendInfoMessage(limiter == null ? m_nonep(accountName) :
-							(limiter.Limit == -1 || group) ? m_exempt2(accountName, group) : m_format2(accountName, limiter));
+							(limiter.Unlimited || group) ? m_exempt2(accountName, group) : m_format2(accountName, limiter));
+						if (limiter.Unlimited || group)
+						{
+							args.Player.SendInfoMessage(m_chests(limiter.Chests.Count));
+						}
+					}
 					else
 					{
 						// 0 = set, 1 = increase, 2 = decrease, 3 = infinite

@@ -14,6 +14,18 @@ namespace ChestLimiter.DB
 
 		public int Limit { get; set; }
 
+		public bool Unlimited
+		{
+			get { return Limit == -1; }
+			set
+			{
+				if (value)
+					Limit = -1;
+				else
+					Limit = ChestLimiter.Config.BaseLimit;
+			}
+		}
+
 		public Limiter()
 		{
 			Chests = new List<int>();
@@ -26,9 +38,9 @@ namespace ChestLimiter.DB
 			Limit = limit;
 		}
 
-		public bool Add(int chestID)
+		public bool Add(int chestID, bool force = false)
 		{
-			if (Chests.Count + 1 > Limit)
+			if (!force && !Unlimited && Chests.Count + 1 > Limit)
 				return false;
 
 			Chests.Add(chestID);
