@@ -48,6 +48,8 @@ namespace ChestLimiter
 			: base(game)
 		{
 			AwaitingOwner = new bool[Main.maxPlayers];
+
+			Order = 2;
 		}
 
 		protected override void Dispose(bool disposing)
