@@ -47,9 +47,46 @@ namespace ChestLimiter.DB
 		{
 			try
 			{
+				#region RemoveEmpties
+
+				for (int i = 0; i < value.Chests.Count; i++)
+				{
+					Limiters.FindAll(l => l.Chests.Contains(value.Chests[i])).ForEach(l =>
+						{
+							UpdateChests(l.AccountName, l.Chests.FindAll(n => n != value.Chests[i]));
+						});
+				}
+
+				#endregion
 				Limiters.Add(value);
 				return db.Query("INSERT INTO 'Limiters' ('AccountName', 'Chests', 'Limit') VALUES (@0, @1, @2)",
 					value.AccountName, value.ToString(), value.Limit) == 1;
+			}
+			catch (Exception ex)
+			{
+				Log.Error(ex.ToString());
+				return false;
+			}
+		}
+
+		public bool AddChest(string accountName, int chestID)
+		{
+			try
+			{
+				// Remove empties
+				Limiters.FindAll(l => l.Chests.Contains(chestID)).ForEach(l =>
+					{
+						l.Chests.Remove(chestID);
+					});
+
+				Limiter limiter = GetLimiter(accountName);
+				if (limiter != null)
+				{
+					var list = limiter.Chests;
+					list.Add(chestID);
+					return UpdateChests(accountName, list);
+				}
+				return false;
 			}
 			catch (Exception ex)
 			{
@@ -64,6 +101,26 @@ namespace ChestLimiter.DB
 			{
 				Limiters.RemoveAll(l => l.AccountName == accountName);
 				return db.Query("DELETE FROM 'Limiters' WHERE 'AccountName' = @0", accountName) == 1;
+			}
+			catch (Exception ex)
+			{
+				Log.Error(ex.ToString());
+				return false;
+			}
+		}
+
+		public bool DelChest(string accountName, int chestID)
+		{
+			try
+			{
+				Limiter limiter = GetLimiter(accountName);
+				if (limiter != null)
+				{
+					var list = limiter.Chests;
+					list.RemoveAll(c => c == chestID);
+					return UpdateChests(accountName, list);
+				}
+				return false;
 			}
 			catch (Exception ex)
 			{

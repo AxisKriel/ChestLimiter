@@ -146,7 +146,7 @@ namespace ChestLimiter
 								if (add)
 									Limiters.Add(limiter);
 								else
-									Limiters.UpdateChests(name, limiter.Chests);
+									Limiters.AddChest(name, limiter.Chests.Last());
 							}
 							else
 							{
@@ -170,8 +170,7 @@ namespace ChestLimiter
 						Limiter limiter = Limiters.GetLimiterByChest(chestID);
 						if (limiter != null)
 						{
-							limiter.Remove(chestID);
-							Limiters.UpdateChests(name, limiter.Chests);
+							Limiters.DelChest(limiter.AccountName, chestID);
 						}
 					}
 				}
@@ -204,6 +203,10 @@ namespace ChestLimiter
 
 			Add(new Command(Permissions.Owner, Commands.ChestOwner, "cowner", "chestowner"),
 				"Returns information regarding a chest's coordinates and owner, if possible.");
+
+			Add(new Command(Permissions.Prune, Commands.ChestPrune, "cprune", "chestprune"),
+				"Prunes chests from the ChestLimiter Database which are no longer existant. " +
+				"Useful after using a chest removal command.");
 
 			#endregion
 

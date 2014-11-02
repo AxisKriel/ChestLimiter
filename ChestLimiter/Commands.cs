@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using ChestLimiter.DB;
+using Terraria;
 using TShockAPI;
 
 namespace ChestLimiter
@@ -169,6 +170,36 @@ namespace ChestLimiter
 			{
 				ChestLimiter.AwaitingOwner[args.Player.Index] = true;
 				args.Player.SendInfoMessage("Open a chest to get its info.");
+			}
+		}
+
+		public static void ChestPrune(CommandArgs args)
+		{
+			try
+			{
+				int count = 0;
+				int chestID = 0;
+				for (int i = 0; i < ChestLimiter.Limiters.Limiters.Count; i++)
+				{
+					for (int j = 0; j < ChestLimiter.Limiters.Limiters[i].Chests.Count; j++)
+					{
+						chestID = ChestLimiter.Limiters.Limiters[i].Chests[j];
+
+						if (Main.chest[chestID] == null)
+						{
+							ChestLimiter.Limiters.Limiters[i].Chests.RemoveAll(k => k == chestID);
+							ChestLimiter.Limiters.UpdateChests(ChestLimiter.Limiters.Limiters[i].AccountName,
+								ChestLimiter.Limiters.Limiters[i].Chests);
+							count++;
+						}
+					}
+				}
+
+				args.Player.SendSuccessMessage("[ChestLimiter] Pruned {0} chests.", count);
+			}
+			catch (Exception)
+			{
+				args.Player.SendErrorMessage("[ChestLimiter] Unable to prune chests.");
 			}
 		}
 	}
