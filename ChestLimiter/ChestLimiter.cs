@@ -2,24 +2,26 @@
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
-using System.Linq;
-using System.Text;
+using System.Reflection;
 using System.Threading.Tasks;
 using ChestLimiter.DB;
+using ChestLimiter.Extensions;
 using Mono.Data.Sqlite;
 using MySql.Data.MySqlClient;
 using Terraria;
 using TerrariaApi.Server;
 using TShockAPI;
+using TShockAPI.Hooks;
 
 namespace ChestLimiter
 {
-	[ApiVersion(1, 16)]
+	[ApiVersion(1, 17)]
     public class ChestLimiter : TerrariaPlugin
     {
 		public static bool[] AwaitingOwner { get; private set; }
 
 		public static Config Config { get; private set; }
+		public static string ConfigPath { get; private set; }
 
 		public static IDbConnection Db { get; private set; }
 		public static LimiterManager Limiters { get; private set; }
@@ -41,13 +43,13 @@ namespace ChestLimiter
 
 		public override Version Version
 		{
-			get { return System.Reflection.Assembly.GetExecutingAssembly().GetName().Version; }
+			get { return Assembly.GetExecutingAssembly().GetName().Version; }
 		}
 
 		public ChestLimiter(Main game)
 			: base(game)
 		{
-			AwaitingOwner = new bool[Main.maxPlayers];
+			AwaitingOwner = new bool[256];
 
 			Order = 2;
 		}
@@ -59,6 +61,11 @@ namespace ChestLimiter
 				ServerApi.Hooks.GameInitialize.Deregister(this, OnInitialize);
 				ServerApi.Hooks.NetGetData.Deregister(this, OnGetData);
 				ServerApi.Hooks.ServerLeave.Deregister(this, OnLeave);
+
+				AccountHooks.AccountDelete -= OnAccountDelete;
+				GeneralHooks.ReloadEvent -= OnReload;
+
+				Db.Dispose();
 			}
 		}
 
@@ -67,6 +74,30 @@ namespace ChestLimiter
 			ServerApi.Hooks.GameInitialize.Register(this, OnInitialize);
 			ServerApi.Hooks.NetGetData.Register(this, OnGetData);
 			ServerApi.Hooks.ServerLeave.Register(this, OnLeave);
+
+			AccountHooks.AccountDelete += OnAccountDelete;
+			GeneralHooks.ReloadEvent += OnReload;
+		}
+
+		async void OnAccountDelete(AccountDeleteEventArgs e)
+		{
+			Limiter limiter = await Limiters.GetAsync(e.User.Name);
+			if (limiter != null)
+			{
+				var result = await Limiters.DelAsync(e.User.Name);
+				switch (result)
+				{
+					case ReturnTypes.NullOrCorrupt:
+						TShock.Log.ConsoleError("chestlimiter: error deleting chest limiter for '{0}'", e.User.Name);
+						break;
+					case ReturnTypes.Success:
+						TShock.Log.ConsoleInfo("chestlimiter: deleted '{0}' chest limiter", e.User.Name);
+						break;
+					case ReturnTypes.Exception:
+						TShock.Log.ConsoleError("chestlimiter: exception thrown while deleting '{0}' chest limiter.", e.User.Name);
+						break;
+				}
+			}
 		}
 
 		void OnGetData(GetDataEventArgs e)
@@ -74,33 +105,16 @@ namespace ChestLimiter
 			if (e.Handled)
 				return;
 
+			int ply = e.Msg.whoAmI;
+			if (ply < 0 || ply > 255 || TShock.Players[ply] == null || !TShock.Players[ply].RealPlayer || !TShock.Players[ply].IsLoggedIn)
+				return;
+
 			#region Packet 31 - Get Chest Contents
 
-			if (e.MsgID == PacketTypes.ChestGetContents)
+			if (e.MsgID == PacketTypes.ChestGetContents && AwaitingOwner[ply])
 			{
-				TSPlayer player = TShock.Players[e.Msg.whoAmI];
-				if (player == null || !player.Active || !player.RealPlayer)
-					return;
-
-				int i = player.Index;
-				if (AwaitingOwner[i])
-				{
-					using (var reader = new BinaryReader(new MemoryStream(e.Msg.readBuffer, e.Index, e.Length)))
-					{
-						int x = reader.ReadInt16();
-						int y = reader.ReadInt16();
-
-						int chestID = Chest.FindChest(x, y);
-						if (chestID != -1)
-						{
-							Limiter limiter = Limiters.GetLimiterByChest(chestID);
-							player.SendInfoMessage("({0},{1}) ChestID: {2}.{3}", x, y, chestID,
-								limiter != null ? "The owner is {0}.".SFormat(player.UserAccountName) : "");
-							AwaitingOwner[i] = false;
-							e.Handled = true;
-						}
-					}
-				}
+				Task.Run(() => GetDataHandlers.HandleGetChestContents(e));
+				e.Handled = true;
 			}
 
 			#endregion
@@ -109,71 +123,8 @@ namespace ChestLimiter
 
 			else if (e.MsgID == PacketTypes.TileKill)
 			{
-				TSPlayer player = TShock.Players[e.Msg.whoAmI];
-				if (player == null || !player.Active || !player.RealPlayer)
-					return;
-
-				string name = player.UserAccountName;
-				using (var reader = new BinaryReader(new MemoryStream(e.Msg.readBuffer, e.Index, e.Length)))
-				{
-					byte id = reader.ReadByte();
-					int x = reader.ReadInt16();
-					int y = reader.ReadInt16();
-
-					if (!TShock.Regions.CanBuild(x, y, player))
-						return;
-
-					if (id == 0)
-					{
-						// Places a chest
-
-						int chestID = Tools.GetCreateChestIndex(x, y);
-
-						bool add = false;
-						Limiter limiter = Limiters.GetLimiter(name);
-						if (limiter == null)
-						{
-							limiter = new Limiter(name, Config.BaseLimit);
-							add = true;
-						}
-
-						if (chestID > -1 && chestID < Main.maxChests)
-						{
-							if (limiter.Add(chestID, player.Group.HasPermission(Permissions.Exempt)))
-							{
-								if (!limiter.Unlimited && !String.IsNullOrEmpty(Config.AnnounceOnPlacement))
-									player.SendInfoMessage(Config.AnnounceOnPlacement, limiter.Chests.Count, limiter.Limit);
-								if (add)
-									Limiters.Add(limiter);
-								else
-									Limiters.AddChest(name, limiter.Chests.Last());
-							}
-							else
-							{
-								player.SendErrorMessage("You've reached your chest limit ({0}).", limiter.Limit);
-								player.SendTileSquare(x, y, 4);
-								e.Handled = true;
-							}
-						}
-					}
-					else if (id == 1)
-					{
-						// Kills a chest
-
-						if (Main.tile[x, y].frameY % 36 != 0)
-							y--;
-						if (Main.tile[x, y].frameX % 36 != 0)
-							x--;
-
-						int chestID = Chest.FindChest(x, y);
-
-						Limiter limiter = Limiters.GetLimiterByChest(chestID);
-						if (limiter != null)
-						{
-							Limiters.DelChest(limiter.AccountName, chestID);
-						}
-					}
-				}
+				Task.Run(() => GetDataHandlers.HandleTileKill(e));
+				e.Handled = true;
 			}
 
 			#endregion
@@ -182,7 +133,8 @@ namespace ChestLimiter
 		void OnInitialize(EventArgs e)
 		{
 			#region Config
-			Config = Config.Read(Path.Combine(TShock.SavePath, "ChestLimiter", "Config.json"));
+			ConfigPath = Path.Combine(TShock.SavePath, "ChestLimiter", "ChestLimiter.json");
+			Config = Config.Read(ConfigPath);
 			#endregion
 
 			#region Commands
@@ -198,10 +150,11 @@ namespace ChestLimiter
 				Permissions.CheckSelf,
 				Permissions.CheckOthers,
 				Permissions.Modify
-			}, Commands.ChestLimit, "climit", "chestlimit"),
-			"Syntax: {0}climit <user name> [* | +/-value]".SFormat(TShock.Config.CommandSpecifier));
+			},
+			Commands.ChestLimit, "climit", "chestlimit"),
+			"Syntax: {0}climit <user name> (-l *|[+-]digit)".SFormat(TShockAPI.Commands.Specifier));
 
-			Add(new Command(Permissions.Owner, Commands.ChestOwner, "cowner", "chestowner"),
+			Add(new Command(Permissions.Owner, Commands.ChestOwner, "cowner", "chestowner") { AllowServer = false },
 				"Returns information regarding a chest's coordinates and owner, if possible.");
 
 			Add(new Command(Permissions.Prune, Commands.ChestPrune, "cprune", "chestprune"),
@@ -227,7 +180,7 @@ namespace ChestLimiter
 			}
 			else if (Config.StorageType.Equals("sqlite", StringComparison.OrdinalIgnoreCase))
 				Db = new SqliteConnection(String.Format("uri=file://{0},Version=3",
-					Path.Combine(TShock.SavePath, "ChestLimiter", "Database.sqlite")));
+					Path.Combine(TShock.SavePath, "ChestLimiter", "ChestLimiter.sqlite")));
 			else
 				throw new InvalidOperationException("Invalid storage type!");
 
@@ -239,6 +192,24 @@ namespace ChestLimiter
 		void OnLeave(LeaveEventArgs e)
 		{
 			AwaitingOwner[e.Who] = false;
+		}
+
+		async void OnReload(ReloadEventArgs e)
+		{
+			await Task.Run(() => Config = Config.Read(ConfigPath));
+			var result = await Limiters.ReloadAsync();
+			switch (result)
+			{
+				case ReturnTypes.NullOrCorrupt:
+					e.Player.SendErrorMessage("Failed to reload ChestLimiter's database.");
+					break;
+				case ReturnTypes.Success:
+					e.Player.SendSuccessMessage("[ChestLimiter] Reloaded config and database!");
+					break;
+				case ReturnTypes.Exception:
+					e.Player.SendErrorMessage("An exception was thrown during ChestLimiter's database reload. Check logs for details.");
+					break;
+			}
 		}
     }
 }

@@ -1,11 +1,8 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using Newtonsoft.Json;
+using TShockAPI;
 
 namespace ChestLimiter
 {
@@ -41,8 +38,10 @@ namespace ChestLimiter
 				else
 					return JsonConvert.DeserializeObject<Config>(File.ReadAllText(path));
 			}
-			catch (Exception)
+			catch (Exception ex)
 			{
+				TShock.Log.ConsoleError("chestlimiter config.read: " + ex.Message);
+				TShock.Log.Error(ex.ToString());
 				return new Config();
 			}
 		}

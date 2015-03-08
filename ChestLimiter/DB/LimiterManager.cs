@@ -1,10 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
-using Mono.Data.Sqlite;
+using ChestLimiter.Extensions;
 using MySql.Data.MySqlClient;
 using TShockAPI;
 using TShockAPI.DB;
@@ -14,8 +12,8 @@ namespace ChestLimiter.DB
 	public class LimiterManager
 	{
 		private IDbConnection db;
-
-		public List<Limiter> Limiters = new List<Limiter>();
+		private object syncLock = new object();
+		private List<Limiter> limiters = new List<Limiter>();
 
 		public LimiterManager(IDbConnection db)
 		{
@@ -24,136 +22,189 @@ namespace ChestLimiter.DB
 			var sql = new SqlTableCreator(db, db.GetSqlType() == SqlType.Sqlite ?
 				(IQueryBuilder)new SqliteQueryCreator() : (IQueryBuilder)new MysqlQueryCreator());
 
-			sql.EnsureExists(new SqlTable("Limiters",
+			sql.EnsureTableStructure(new SqlTable("Limiters",
 				new SqlColumn("AccountName", MySqlDbType.VarChar) { Primary = true, Unique = true },
 				new SqlColumn("Chests", MySqlDbType.Text),
 				new SqlColumn("Limit", MySqlDbType.Int32)));
 
-			using (var result = db.QueryReader("SELECT * FROM Limiters"))
+			using (var result = db.QueryReader("SELECT * FROM `Limiters`"))
 			{
 				while (result.Read())
 				{
-					Limiters.Add(new Limiter()
-					{
-						AccountName = result.Get<string>("AccountName"),
-						Chests = Limiter.Parse(result.Get<string>("Chests")),
-						Limit = result.Get<int>("Limit")
-					});
+					Limiter limiter = new Limiter(result.Get<string>("AccountName"), result.Get<int>("Limit"));
+					limiter.LoadChests(result.Get<string>("Chests"));
+					limiters.Add(limiter);
 				}
 			}
 		}
 
-		public bool Add(Limiter value)
+		public Task<ReturnTypes> AddAsync(Limiter value)
 		{
-			try
-			{
-				#region RemoveEmpties
-
-				for (int i = 0; i < value.Chests.Count; i++)
+			return Task.Run(() =>
 				{
-					Limiters.FindAll(l => l.Chests.Contains(value.Chests[i])).ForEach(l =>
+					try
+					{
+						lock (syncLock)
 						{
-							UpdateChests(l.AccountName, l.Chests.FindAll(n => n != value.Chests[i]));
-						});
-				}
-
-				#endregion
-				Limiters.Add(value);
-				return db.Query("INSERT INTO 'Limiters' ('AccountName', 'Chests', 'Limit') VALUES (@0, @1, @2)",
-					value.AccountName, value.ToString(), value.Limit) == 1;
-			}
-			catch (Exception ex)
-			{
-				Log.Error(ex.ToString());
-				return false;
-			}
-		}
-
-		public bool AddChest(string accountName, int chestID)
-		{
-			try
-			{
-				// Remove empties
-				Limiters.FindAll(l => l.Chests.Contains(chestID)).ForEach(l =>
+							limiters.Add(value);
+							return db.Query("INSERT INTO `Limiters` (`AccountName`, `Chests`, `Limit`) VALUES (@0, @1, @2)",
+								value.AccountName, value.Chests.Serialize(), value.Limit) == 1 ? ReturnTypes.Success : ReturnTypes.NullOrCorrupt;
+						}
+					}
+					catch (Exception ex)
 					{
-						l.Chests.Remove(chestID);
-					});
+						TShock.Log.Error(ex.ToString());
+						return ReturnTypes.Exception;
+					}
+				});
+		}
 
-				Limiter limiter = GetLimiter(accountName);
-				if (limiter != null)
+		public Task<ReturnTypes> DelAsync(string accountName)
+		{
+			return Task.Run(() =>
 				{
-					var list = limiter.Chests;
-					list.Add(chestID);
-					return UpdateChests(accountName, list);
-				}
-				return false;
-			}
-			catch (Exception ex)
-			{
-				Log.Error(ex.ToString());
-				return false;
-			}
+					try
+					{
+						lock (syncLock)
+						{
+							limiters.RemoveAll(l => l.AccountName == accountName);
+							return db.Query("DELETE FROM `Limiters` WHERE `AccountName` = @0", accountName) > 0 ?
+								ReturnTypes.Success : ReturnTypes.NullOrCorrupt;
+						}
+					}
+					catch (Exception ex)
+					{
+						TShock.Log.Error(ex.ToString());
+						return ReturnTypes.Exception;
+					}
+				});
 		}
 
-		public bool Del(string accountName)
+		public Task<List<Limiter>> GetAllAsync()
 		{
-			try
-			{
-				Limiters.RemoveAll(l => l.AccountName == accountName);
-				return db.Query("DELETE FROM 'Limiters' WHERE 'AccountName' = @0", accountName) == 1;
-			}
-			catch (Exception ex)
-			{
-				Log.Error(ex.ToString());
-				return false;
-			}
+			return Task.Run(() => { return limiters; });
 		}
 
-		public bool DelChest(string accountName, int chestID)
+		public Task<Limiter> GetAsync(string accountName)
 		{
-			try
-			{
-				Limiter limiter = GetLimiter(accountName);
-				if (limiter != null)
+			return Task.Run(() =>
 				{
-					var list = limiter.Chests;
-					list.RemoveAll(c => c == chestID);
-					return UpdateChests(accountName, list);
-				}
-				return false;
-			}
-			catch (Exception ex)
-			{
-				Log.Error(ex.ToString());
-				return false;
-			}
+					lock (syncLock)
+						return limiters.Find(l => l.AccountName == accountName);
+				});
 		}
 
-		public Limiter GetLimiter(string accountName)
+		public Task<Limiter> GetByChestAsync(int chestID)
 		{
-			return Limiters.Find(l => l.AccountName == accountName);
+			return Task.Run(() =>
+				{
+					lock (syncLock)
+						return limiters.Find(l => l.Chests.Contains(chestID));
+				});
 		}
 
+		public Task<ReturnTypes> ReloadAsync()
+		{
+			return Task.Run(() =>
+				{
+					try
+					{
+						lock (syncLock)
+						{
+							limiters.Clear();
+							using (var result = db.QueryReader("SELECT * FROM `Limiters`"))
+							{
+								while (result.Read())
+								{
+									Limiter limiter = new Limiter(result.Get<string>("AccountName"), result.Get<int>("Limit"));
+									limiter.LoadChests(result.Get<string>("Chests"));
+									limiters.Add(limiter);
+								}
+							}
+							return ReturnTypes.Success;
+						}
+					}
+					catch (Exception ex)
+					{
+						TShock.Log.ConsoleError(ex.ToString());
+						return ReturnTypes.Exception;
+					}
+				});
+		}
+
+		public Task<ReturnTypes> UpdateChests(string accountName, List<int> value)
+		{
+			return Task.Run<ReturnTypes>(() =>
+				{
+					try
+					{
+						lock (syncLock)
+						{
+							Limiter limiter = limiters.Find(l => l.AccountName == accountName);
+							if (limiter == null)
+								return ReturnTypes.NullOrCorrupt;
+
+							limiter.Chests = value;
+							return db.Query("UPDATE `Limiters` SET `Chests` = @1 WHERE `AccountName` = @0",
+								accountName, value.Serialize()) == 1 ? ReturnTypes.Success : ReturnTypes.NullOrCorrupt;
+						}
+					}
+					catch (Exception ex)
+					{
+						TShock.Log.Error(ex.ToString());
+						return ReturnTypes.Exception;
+					}
+				});
+		}
+
+		public Task<ReturnTypes> UpdateLimit(string accountName, int value)
+		{
+			return Task.Run(() =>
+				{
+					try
+					{
+						lock (syncLock)
+						{
+							Limiter limiter = limiters.Find(l => l.AccountName == accountName);
+							if (limiter == null)
+								return ReturnTypes.NullOrCorrupt;
+
+							limiter.Limit = value;
+							return db.Query("UPDATE `Limiters` SET `Limit` = @1 WHERE `AccountName` = @0",
+								accountName, value) == 1 ? ReturnTypes.Success : ReturnTypes.NullOrCorrupt;
+						}
+					}
+					catch (Exception ex)
+					{
+						TShock.Log.ConsoleError(ex.ToString());
+						return ReturnTypes.Exception;
+					}
+				});
+		}
+
+		#region Obsolete
+		[Obsolete("Use GetByChestAsync instead.")]
 		public Limiter GetLimiterByChest(int chestID)
 		{
-			return Limiters.Find(l => l.Chests.Contains(chestID));
+			return limiters.Find(l => l.Chests.Contains(chestID));
 		}
 
+		[Obsolete("Not functional. Use ReloadAsync instead.")]
 		public bool Reload()
 		{
 			try
 			{
-				Limiters.Clear();
+				limiters.Clear();
 				using (var result = db.QueryReader("SELECT * FROM Limiters"))
 				{
 					while (result.Read())
 					{
-						Limiters.Add(new Limiter()
-						{
-							AccountName = result.Get<string>("AccountName"),
-							Chests = Limiter.Parse(result.Get<string>("Chests")),
-							Limit = result.Get<int>("Limit")
-						});
+						//Limiters.Add(new Limiter()
+						//{
+						//	AccountName = result.Get<string>("AccountName"),
+						//	Chests = Limiter.Parse(result.Get<string>("Chests")),
+						//	Limit = result.Get<int>("Limit")
+						//});
 					}
 				}
 				return true;
@@ -163,37 +214,22 @@ namespace ChestLimiter.DB
 				return false;
 			}
 		}
+		#endregion
+	}
 
-		public bool UpdateChests(string accountName, List<int> value)
-		{
-			try
-			{
-				Limiters.Find(l => l.AccountName == accountName).Chests = value;
-				return db.Query("UPDATE Limiters SET Chests = @1 WHERE AccountName = @0",
-					accountName,
-					string.Join(",", value)) == 1;
-			}
-			catch (Exception ex)
-			{
-				Log.Error(ex.ToString());
-				return false;
-			}
-		}
-
-		public bool UpdateLimit(string accountName, int value)
-		{
-			try
-			{
-				Limiters.Find(l => l.AccountName == accountName).Limit = value;
-				return db.Query("UPDATE Limiters SET Limit = @1 WHERE AccountName = @0",
-					accountName,
-					value) == 1;
-			}
-			catch (Exception ex)
-			{
-				Log.Error(ex.ToString());
-				return false;
-			}
-		}
+	public enum ReturnTypes
+	{
+		/// <summary>
+		/// Returned when a null limiter is passed down or db.Query fails.
+		/// </summary>
+		NullOrCorrupt = 0,
+		/// <summary>
+		/// Returned when the Task finishes successfully.
+		/// </summary>
+		Success = 1,
+		/// <summary>
+		/// Returned when the Task finishes abruptly due to an unhandled exception.
+		/// </summary>
+		Exception = 2
 	}
 }
