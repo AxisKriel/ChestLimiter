@@ -40,6 +40,17 @@ namespace ChestLimiter
 				int y = reader.ReadInt16();
 				int style = reader.ReadInt16();
 
+				// Range checks
+				if (x < 0 || x > Main.maxTilesX || y < 0 || y > Main.maxTilesY)
+				{
+					TShock.Log.ConsoleInfo("chestlimiter: range checks broken ({0}/{1})x({2}/{3})",
+						x,
+						Main.maxTilesX,
+						y,
+						Main.maxTilesY);
+					return;
+				}
+
 				if (action == 0 && TShock.Regions.CanBuild(x, y, TShock.Players[ply]))
 				{
 					string accountName = TShock.Players[ply].UserAccountName;

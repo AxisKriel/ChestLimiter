@@ -23,9 +23,10 @@ namespace ChestLimiter.DB
 				(IQueryBuilder)new SqliteQueryCreator() : (IQueryBuilder)new MysqlQueryCreator());
 
 			sql.EnsureTableStructure(new SqlTable("Limiters",
-				new SqlColumn("AccountName", MySqlDbType.VarChar) { Primary = true, Unique = true },
+				new SqlColumn("AccountName", MySqlDbType.VarChar, 32) { Primary = true },
 				new SqlColumn("Chests", MySqlDbType.Text),
-				new SqlColumn("Limit", MySqlDbType.Int32)));
+				new SqlColumn(db.GetSqlType() == SqlType.Mysql ? "`Limit`" : "Limit", MySqlDbType.Int32)
+				));
 
 			using (var result = db.QueryReader("SELECT * FROM `Limiters`"))
 			{
